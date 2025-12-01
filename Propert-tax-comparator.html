@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Canadian Property Tax Comparator</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      max-width: 900px;
+      margin: 1.5rem auto;
+      padding: 0 1rem;
+      line-height: 1.4;
+    }
+    h1 {
+      font-size: 1.6rem;
+      margin-bottom: 0.5rem;
+    }
+    .card {
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 1rem;
+      margin-bottom: 1rem;
+    }
+    label {
+      display: block;
+      margin-bottom: 0.4rem;
+      font-weight: 600;
+    }
+    input, select, button {
+      font: inherit;
+      padding: 0.35rem 0.5rem;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      margin-bottom: 0.7rem;
+      width: 100%;
+      max-width: 260px;
+      box-sizing: border-box;
+    }
+    button {
+      cursor: pointer;
+      border: none;
+      background: #333;
+      color: white;
+      font-weight: 600;
+      width: auto;
+    }
+    button:disabled {
+      background: #aaa;
+      cursor: not-allowed;
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      align-items: flex-end;
+    }
+    .row > div {
+      flex: 1 1 220px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 1rem;
+      font-size: 0.9rem;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 0.4rem 0.5rem;
+      text-align: right;
+      white-space: nowrap;
+    }
+    th:first-child, td:first-child {
+      text-align: left;
+      white-space: normal;
+    }
+    th {
+      background: #f7f7f7;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      cursor: pointer;
+      user-select: none;
+    }
+    th.sort-asc::after {
+      content: " ▲";
+      font-size: 0.7rem;
+    }
+    th.sort-desc::after {
+      content: " ▼";
+      font-size: 0.7rem;
+    }
+    .note {
+      font-size: 0.8rem;
+      color: #555;
+      margin-top: 0.5rem;
+    }
+    .note-small {
+      font-size: 0.75rem;
+      color: #777;
+      margin-top: 0.25rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>Canadian Property Tax Comparator</h1>
+  <p>
+    Enter your home value, pick your home city, and this tool will estimate what a
+    <strong>similar relative home</strong> would cost (and be taxed) in other Canadian cities,
+    corrected for average local housing prices.
+  </p>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <label for="homeValue">Your home value (assessed or market)</label>
+        <input id="homeValue" type="number" min="0" step="1000" placeholder="e.g. 440000" />
+      </div>
+      <div>
+        <label for="baseCity">Your home city</label>
+        <select id="baseCity"></select>
+      </div>
+      <div>
+        <button id="calcBtn">Compare</button>
+      </div>
+    </div>
+    <div class="note">
+      Rates and average prices are rough 2025 estimates and for illustration only.
+      Real bills depend on detailed municipal calculations and reassessments.
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Results (similar relative home in each city)</h2>
+    <div class="note-small">Tip: click any column header to sort (click again to reverse).</div>
+    <table id="resultsTable">
+      <thead>
+        <tr>
+          <th data-col="city">City</th>
+          <th data-col="rate">Effective tax rate</th>
+          <th data-col="avgPrice">Avg home price</th>
+          <th data-col="equivValue">Equivalent home value</th>
+          <th data-col="tax">Estimated annual tax</th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- Rows injected by JS -->
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    // Approximate 2025 data: effective residential tax rate and average home price (CAD).
+    // rate = annual tax / home value (e.g. 0.00704 = 0.704%).
+    const cities = [
+      { id: "vancouver",  name: "Vancouver, BC",   rate: 0.00312, avgPrice: 1265700 },
+      { id: "calgary",    name: "Calgary, AB",     rate: 0.00618, avgPrice: 565200  },
+      { id: "edmonton",   name: "Edmonton, AB",    rate: 0.01014, avgPrice: 412100  },
+      { id: "saskatoon",  name: "Saskatoon, SK",   rate: 0.01001, avgPrice: 421100  },
+      { id: "regina",     name: "Regina, SK",      rate: 0.00704, avgPrice: 335100  },
+      { id: "winnipeg",   name: "Winnipeg, MB",    rate: 0.00915, avgPrice: 402000  },
+      { id: "toronto",    name: "Toronto, ON",     rate: 0.00754, avgPrice: 1054000 },
+      { id: "ottawa",     name: "Ottawa, ON",      rate: 0.01227, avgPrice: 709000  },
+      { id: "mississauga",name: "Mississauga, ON", rate: 0.01034, avgPrice: 968000  },
+      { id: "hamilton",   name: "Hamilton, ON",    rate: 0.01497, avgPrice: 781000  }
+    ];
+
+    const baseCitySelect = document.getElementById("baseCity");
+    const homeValueInput = document.getElementById("homeValue");
+    const calcBtn = document.getElementById("calcBtn");
+    const resultsBody = document.querySelector("#resultsTable tbody");
+    const headerCells = document.querySelectorAll("#resultsTable thead th");
+
+    let lastResults = [];          // stores the last calculated rows
+    let currentSortCol = null;     // 'city', 'rate', 'avgPrice', 'equivValue', 'tax'
+    let currentSortDir = "asc";    // 'asc' or 'desc'
+
+    function formatMoney(x) {
+      if (isNaN(x)) return "-";
+      return "$" + x.toLocaleString("en-CA", { maximumFractionDigits: 0 });
+    }
+
+    function formatRate(r) {
+      return (r * 100).toFixed(3) + "%";
+    }
+
+    function populateCitySelect() {
+      cities.forEach(city => {
+        const opt = document.createElement("option");
+        opt.value = city.id;
+        opt.textContent = city.name;
+        baseCitySelect.appendChild(opt);
+      });
+      // Default to Regina.
+      baseCitySelect.value = "regina";
+    }
+
+    function buildResults() {
+      const homeValue = parseFloat(homeValueInput.value);
+      const baseCityId = baseCitySelect.value;
+
+      lastResults = [];
+      resultsBody.innerHTML = "";
+
+      if (!homeValue || homeValue <= 0 || !baseCityId) {
+        return;
+      }
+
+      const baseCity = cities.find(c => c.id === baseCityId);
+      if (!baseCity || !baseCity.avgPrice) return;
+
+      const relativeFactor = homeValue / baseCity.avgPrice;
+
+      lastResults = cities.map(city => {
+        const equivValue = city.avgPrice * relativeFactor;
+        const tax = equivValue * city.rate;
+        return {
+          city: city.name,
+          rate: city.rate,
+          avgPrice: city.avgPrice,
+          equivValue: equivValue,
+          tax: tax
+        };
+      });
+    }
+
+    function renderTable() {
+      resultsBody.innerHTML = "";
+      lastResults.forEach(row => {
+        const tr = document.createElement("tr");
+
+        const tdCity = document.createElement("td");
+        tdCity.textContent = row.city;
+
+        const tdRate = document.createElement("td");
+        tdRate.textContent = formatRate(row.rate);
+
+        const tdAvg = document.createElement("td");
+        tdAvg.textContent = formatMoney(row.avgPrice);
+
+        const tdEquiv = document.createElement("td");
+        tdEquiv.textContent = formatMoney(row.equivValue);
+
+        const tdTax = document.createElement("td");
+        tdTax.textContent = formatMoney(row.tax);
+
+        tr.appendChild(tdCity);
+        tr.appendChild(tdRate);
+        tr.appendChild(tdAvg);
+        tr.appendChild(tdEquiv);
+        tr.appendChild(tdTax);
+
+        resultsBody.appendChild(tr);
+      });
+    }
+
+    function calculate() {
+      buildResults();
+      // When recalculating, keep existing sort if there is one
+      if (currentSortCol) {
+        sortResults(currentSortCol, currentSortDir, false);
+      }
+      renderTable();
+    }
+
+    function clearSortIndicators() {
+      headerCells.forEach(th => {
+        th.classList.remove("sort-asc", "sort-desc");
+      });
+    }
+
+    function sortResults(col, dir, toggleDirection = true) {
+      // Toggle direction if clicking the same column again
+      if (toggleDirection) {
+        if (currentSortCol === col) {
+          currentSortDir = currentSortDir === "asc" ? "desc" : "asc";
+        } else {
+          currentSortCol = col;
+          currentSortDir = "asc";
+        }
+      } else {
+        // If not toggling, use given dir (for initial sort after recalc)
+        currentSortCol = col;
+        currentSortDir = dir;
+      }
+
+      const multiplier = currentSortDir === "asc" ? 1 : -1;
+
+      lastResults.sort((a, b) => {
+        let valA = a[col];
+        let valB = b[col];
+
+        // City name is text; others numeric
+        if (col === "city") {
+          return valA.localeCompare(valB) * multiplier;
+        } else {
+          return (valA - valB) * multiplier;
+        }
+      });
+
+      clearSortIndicators();
+      // Set indicator on current header
+      headerCells.forEach(th => {
+        if (th.dataset.col === currentSortCol) {
+          th.classList.add(currentSortDir === "asc" ? "sort-asc" : "sort-desc");
+        }
+      });
+    }
+
+    function setupSorting() {
+      headerCells.forEach(th => {
+        th.addEventListener("click", () => {
+          const col = th.dataset.col;
+          if (!col) return;
+          sortResults(col, currentSortDir, true);
+          renderTable();
+        });
+      });
+    }
+
+    populateCitySelect();
+    setupSorting();
+    calcBtn.addEventListener("click", calculate);
+
+    // Optional: recalc on Enter key
+    homeValueInput.addEventListener("keyup", (e) => {
+      if (e.key === "Enter") calculate();
+    });
+  </script>
+</body>
+</html>
